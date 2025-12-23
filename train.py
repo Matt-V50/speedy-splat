@@ -9,6 +9,7 @@
 # For inquiries contact  george.drettakis@inria.fr
 #
 
+import json
 import os
 import torch
 from random import randint
@@ -95,6 +96,11 @@ def training(dataset, opt, pipe, testing_iterations, visualize_iterations, savin
     train_time_ms = 0
     iter_start = torch.cuda.Event(enable_timing = True)
     iter_end = torch.cuda.Event(enable_timing = True)
+    optim_start = torch.cuda.Event(enable_timing=True)
+    optim_end = torch.cuda.Event(enable_timing=True)
+    total_time = 0.0
+    total_render_time = 0.0
+    total_optim_time = 0.0
 
     prune_time_min = 0
     prune_peak_memory_allocated = 0
@@ -164,7 +170,7 @@ def training(dataset, opt, pipe, testing_iterations, visualize_iterations, savin
             if (iteration in saving_iterations):
                 print("\n[ITER {}] Saving Gaussians".format(iteration))
                 scene.save(iteration)
-
+            optim_start.record()
             # Densification
             if iteration < opt.densify_until_iter:
                 # Keep track of max radii in image-space for pruning
@@ -212,11 +218,17 @@ def training(dataset, opt, pipe, testing_iterations, visualize_iterations, savin
                 prune_peak_memory_allocated = prune_pkg['peak_memory_allocated']
                 prune_peak_memory_reserved = prune_pkg['peak_memory_reserved']
 
-
+            optim_end.record()
+            torch.cuda.synchronize()
             # Log and save
             iter_time = iter_start.elapsed_time(iter_end)
             train_time_ms += iter_time
             train_time_min = train_time_ms / 60_000
+            
+            optim_time = optim_start.elapsed_time(optim_end)
+            total_time += (iter_time + optim_time) / 1e3
+            total_render_time += iter_time / 1e3
+            total_optim_time += optim_time / 1e3
 
             training_report(
                 tb_writer, iteration, Ll1, loss,
@@ -226,6 +238,14 @@ def training(dataset, opt, pipe, testing_iterations, visualize_iterations, savin
                 prune_peak_memory_allocated, prune_peak_memory_reserved,
                 scene, render,
                 (pipe, background))
+    print(f"Gaussian number: {gaussians._xyz.shape[0]}")
+    print(f"Training time: {total_time}, Rendering time: {total_render_time}, Optimization time: {total_optim_time}")
+    with open(os.path.join(args.model_path, "training_time.json"), 'w') as f:
+        json.dump({
+            "train_times": total_time,
+            "train_render_times": total_render_time,
+            "train_optimal_times": total_optim_time
+        }, f)
 
 
 def prepare_output_and_logger(args):
